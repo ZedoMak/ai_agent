@@ -19,7 +19,7 @@ if not VAULT_PATH:
     raise ValueError(
         "Missing OBSIDIAN_VAULT_PATH in .env file. "
         "Set it to the absolute path of your Obsidian vault, e.g. "
-        "OBSIDIAN_VAULT_PATH=/home/eren/Documents/MyVault"
+        "OBSIDIAN_VAULT_PATH=/home/username/Documents/MyVault"
     )
 
 client_llm = OpenAI(

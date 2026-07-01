@@ -8,18 +8,13 @@ from mcp.client.stdio import stdio_client
 
 load_dotenv()
 
-# Set this in your .env file, e.g.:
-# OBSIDIAN_VAULT_PATH=/home/eren/Documents/MyVault
 VAULT_PATH = os.getenv("OBSIDIAN_VAULT_PATH")
 if not VAULT_PATH:
     raise ValueError(
         "Missing OBSIDIAN_VAULT_PATH in .env file. "
         "Set it to the absolute path of your Obsidian vault, e.g. "
-        "OBSIDIAN_VAULT_PATH=/home/eren/Documents/MyVault"
+        "OBSIDIAN_VAULT_PATH=/home/username/Documents/MyVault"
     )
-
-# obsidian-mcp is a stdio server: no network connection, no OAuth.
-# We launch it as a subprocess and talk to it over stdin/stdout.
 server_params = StdioServerParameters(
     command="obsidian-mcp",
     args=[],
