@@ -27,7 +27,7 @@ client_llm = OpenAI(
     base_url="https://openrouter.ai/api/v1",
 )
 
-MODEL = "deepseek/deepseek-v4-flash"                                            #"meta-llama/llama-3.1-8b-instruct"
+MODEL = os.getenv("AGENT")                                           #"meta-llama/llama-3.1-8b-instruct"
 SYSTEM_PROMPT = (
     "You are a helpful assistant with access to the user's Obsidian vault. "
     "Always read a note before updating it so you don't overwrite existing "
