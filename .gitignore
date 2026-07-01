@@ -4,3 +4,4 @@ venv
 token.json
 .agents
 .codex
+__pycache__
