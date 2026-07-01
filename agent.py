@@ -1,6 +1,7 @@
 import os
 import asyncio
 import json
+from contextlib import AsyncExitStack
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -8,7 +9,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from mcp import ClientSession
-from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamablehttp_client
 
 load_dotenv()
 
@@ -56,41 +57,17 @@ def get_authenticated_session():
             token.write(creds.to_json())
     return creds.token
 
-async def get_mcp_tools():
-    token = get_authenticated_session()
-    server_url = "https://calendar.mcp.googleapis.com/mcp/v1"
-    try:
-        async with sse_client(
-            url=server_url,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=30.0,
-        ) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                result = await session.list_tools()
-                tools = []
-                for tool in result.tools:
-                    tools.append({
-                        "name": tool.name,
-                        "description": tool.description,
-                        "inputSchema": tool.inputSchema,
-                        "_session": session
-                    })
-                return tools, session
-    except Exception as e:
-        print(f"Failed to connect to MCP server: {e}")
-        return [], None
 
 def convert_mcp_tool_to_openai(tool):
-    schema = tool["inputSchema"]
     return {
         "type": "function",
         "function": {
-            "name": tool["name"],
-            "description": tool["description"],
-            "parameters": schema
-        }
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.inputSchema,
+        },
     }
+
 
 async def execute_tool_call(tool_name, arguments, session):
     try:
@@ -101,70 +78,100 @@ async def execute_tool_call(tool_name, arguments, session):
     except Exception as e:
         return f"Error calling tool: {e}"
 
+
 async def main_loop():
+    token = get_authenticated_session()
+    server_url = "https://calendarmcp.googleapis.com/mcp/v1"
+
     print("Connecting to Google Calendar MCP server...")
-    tools, session = await get_mcp_tools()
-    if not tools:
-        print("No tools available. Exiting.")
-        return
 
-    openai_tools = [convert_mcp_tool_to_openai(t) for t in tools]
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    print(f"Agent ready (using {MODEL}). Type 'exit' to quit.\n")
-    while True:
-        user_input = input("You: ")
-        if user_input.lower() in ("exit", "quit"):
-            break
-        messages.append({"role": "user", "content": user_input})
-
-        try:
-            response = client_llm.chat.completions.create(
-                model=MODEL,
-                messages=messages,
-                tools=openai_tools,
-                tool_choice="auto",
-                temperature=0.7,
-                extra_headers={
-                    "HTTP-Referer": "http://localhost:8080",
-                    "X-Title": "Calendar Agent",
-                }
+    # Everything that needs the live MCP connection (listing tools AND
+    # calling them during the chat loop) has to happen while these
+    # context managers are open. Opening the connection in a separate
+    # function and returning the session after the "async with" block
+    # exits closes the connection immediately -- the session object
+    # would look fine but every call on it would fail or hang.
+    # AsyncExitStack lets us keep both context managers open for the
+    # whole lifetime of the chat loop and clean them up together at
+    # the end, no matter how the loop exits.
+    async with AsyncExitStack() as stack:
+        read_stream, write_stream, _get_session_id = await stack.enter_async_context(
+            streamablehttp_client(
+                url=server_url,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30.0,
             )
-            assistant_message = response.choices[0].message
-            messages.append(assistant_message.to_dict())
+        )
+        session = await stack.enter_async_context(
+            ClientSession(read_stream, write_stream)
+        )
 
-            if assistant_message.tool_calls:
-                print("🔧 Agent is using tools...")
-                for tool_call in assistant_message.tool_calls:
-                    tool_name = tool_call.function.name
-                    arguments = json.loads(tool_call.function.arguments)
-                    result_text = await execute_tool_call(tool_name, arguments, session)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": result_text
-                    })
-                second_response = client_llm.chat.completions.create(
+        await session.initialize()
+        tools_result = await session.list_tools()
+        if not tools_result.tools:
+            print("No tools available. Exiting.")
+            return
+
+        openai_tools = [convert_mcp_tool_to_openai(t) for t in tools_result.tools]
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+        print(f"Agent ready (using {MODEL}). Type 'exit' to quit.\n")
+        while True:
+            user_input = input("You: ")
+            if user_input.lower() in ("exit", "quit"):
+                break
+            messages.append({"role": "user", "content": user_input})
+
+            try:
+                response = client_llm.chat.completions.create(
                     model=MODEL,
                     messages=messages,
+                    tools=openai_tools,
+                    tool_choice="auto",
                     temperature=0.7,
                     extra_headers={
                         "HTTP-Referer": "http://localhost:8080",
                         "X-Title": "Calendar Agent",
-                    }
+                    },
                 )
-                final_reply = second_response.choices[0].message.content
-                messages.append({"role": "assistant", "content": final_reply})
-                print(f"Agent: {final_reply}\n")
-            else:
-                reply = assistant_message.content
-                print(f"Agent: {reply}\n")
+                assistant_message = response.choices[0].message
+                messages.append(assistant_message.to_dict())
 
-        except Exception as e:
-            print(f"Error: {e}\n")
+                if assistant_message.tool_calls:
+                    print("Agent is using tools...")
+                    for tool_call in assistant_message.tool_calls:
+                        tool_name = tool_call.function.name
+                        arguments = json.loads(tool_call.function.arguments)
+                        result_text = await execute_tool_call(tool_name, arguments, session)
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": result_text,
+                            }
+                        )
+                    second_response = client_llm.chat.completions.create(
+                        model=MODEL,
+                        messages=messages,
+                        temperature=0.7,
+                        extra_headers={
+                            "HTTP-Referer": "http://localhost:8080",
+                            "X-Title": "Calendar Agent",
+                        },
+                    )
+                    final_reply = second_response.choices[0].message.content
+                    messages.append({"role": "assistant", "content": final_reply})
+                    print(f"Agent: {final_reply}\n")
+                else:
+                    reply = assistant_message.content
+                    print(f"Agent: {reply}\n")
 
-    if session:
-        await session.__aexit__(None, None, None)
+            except Exception as e:
+                print(f"Error: {e}\n")
+
+        # AsyncExitStack closes the ClientSession and the streamable HTTP
+        # client automatically when this block exits, in the right order.
+
 
 if __name__ == "__main__":
     asyncio.run(main_loop())

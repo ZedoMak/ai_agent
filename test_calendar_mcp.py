@@ -6,7 +6,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from mcp import ClientSession
-from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamablehttp_client
 
 load_dotenv()
 
@@ -44,20 +44,21 @@ def get_authenticated_session():
 
 async def test_mcp_connection():
     token = get_authenticated_session()
-    server_url = "https://calendar.mcp.googleapis.com/mcp/v1"
-    print("🔌 Connecting to Google Calendar MCP server...")
-    async with sse_client(
+    server_url = "https://calendarmcp.googleapis.com/mcp/v1"
+    print("Connecting to Google Calendar MCP server...")
+    
+    async with streamablehttp_client(
         url=server_url,
         headers={"Authorization": f"Bearer {token}"},
         timeout=30.0,
-    ) as (read_stream, write_stream):
+    ) as (read_stream, write_stream, _get_session_id):
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
             tools_result = await session.list_tools()
-            print("\n📋 Available tools:")
+            print("\nAvailable tools:")
             for tool in tools_result.tools:
                 print(f"  - {tool.name}: {tool.description}")
-            print("\n📅 Fetching your calendars...")
+            print("\nFetching your calendars...")
             result = await session.call_tool("list_calendars", arguments={})
             content = result.content[0].text if result.content else "No data"
             try:
@@ -67,16 +68,16 @@ async def test_mcp_connection():
                     print(f"  - {cal.get('summary', 'Unnamed')}")
             except json.JSONDecodeError:
                 print("Raw response:", content)
-            print("\n📆 Fetching today's events...")
+            print("\nFetching today's events...")
             from datetime import datetime, timedelta
             today = datetime.now().date()
             tomorrow = today + timedelta(days=1)
             result = await session.call_tool(
                 "list_events",
                 arguments={
-                    "time_min": today.isoformat() + "T00:00:00Z",
-                    "time_max": tomorrow.isoformat() + "T00:00:00Z",
-                    "max_results": 5
+                    "startTime": today.isoformat() + "T00:00:00",
+                    "endTime": tomorrow.isoformat() + "T00:00:00",
+                    "pageSize": 5
                 }
             )
             content = result.content[0].text if result.content else "No events"
