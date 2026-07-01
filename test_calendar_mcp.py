@@ -1,4 +1,3 @@
-import httpx
 import os
 import asyncio
 import json
@@ -11,9 +10,6 @@ from mcp.client.sse import sse_client
 
 load_dotenv()
 
-
-
-
 SCOPES = [
     "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
     "https://www.googleapis.com/auth/calendar.events.freebusy",
@@ -21,15 +17,10 @@ SCOPES = [
     "https://www.googleapis.com/auth/calendar.events",
 ]
 
-#local web server OAuth flow
 def get_authenticated_session():
-    """Obtains credentials via local web server flow and returns an access token."""
     creds = None
-    # The file token.json stores the user's access and refresh tokens
     if os.path.exists("token.json"):
         creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-    
-    # If there are no (valid) credentials available, let the user log in.
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
@@ -46,66 +37,40 @@ def get_authenticated_session():
                 },
                 scopes=SCOPES,
             )
-            # opens a browser and runs the local server automatically
             creds = flow.run_local_server(port=8080, open_browser=True)
-        
-        # Save the credentials for the next run
         with open("token.json", "w") as token:
             token.write(creds.to_json())
-    
-    return creds.token  # returns the access token string
-
-
-client = httpx.AsyncClient(verify=False, timeout=30.0)
+    return creds.token
 
 async def test_mcp_connection():
-    """Connects to the remote Google Calendar MCP server and lists tools."""
     token = get_authenticated_session()
-    
-    # The remote MCP server URL
     server_url = "https://calendar.mcp.googleapis.com/mcp/v1"
-    
     print("🔌 Connecting to Google Calendar MCP server...")
-    
-    # Connect via SSE with the bearer token in headers
     async with sse_client(
         url=server_url,
         headers={"Authorization": f"Bearer {token}"},
-        client=client 
+        timeout=30.0,
     ) as (read_stream, write_stream):
         async with ClientSession(read_stream, write_stream) as session:
-            # Initialize the session
             await session.initialize()
-            
-            # List all available tools
             tools_result = await session.list_tools()
             print("\n📋 Available tools:")
             for tool in tools_result.tools:
                 print(f"  - {tool.name}: {tool.description}")
-            
-            # try to list calendars as a simple test
             print("\n📅 Fetching your calendars...")
-
-            result = await session.call_tool(
-                "list_calendars",
-                arguments={}  # no arguments needed for list_calendars
-            )
-            
+            result = await session.call_tool("list_calendars", arguments={})
             content = result.content[0].text if result.content else "No data"
             try:
                 calendars = json.loads(content)
                 print(f"Found {len(calendars)} calendars:")
-                for cal in calendars[:5]:  # show first 5
+                for cal in calendars[:5]:
                     print(f"  - {cal.get('summary', 'Unnamed')}")
             except json.JSONDecodeError:
                 print("Raw response:", content)
-            
-            # try to list events for today (as a second test)
             print("\n📆 Fetching today's events...")
             from datetime import datetime, timedelta
             today = datetime.now().date()
             tomorrow = today + timedelta(days=1)
-            # The list_events tool expects time_min and time_max in ISO format
             result = await session.call_tool(
                 "list_events",
                 arguments={
