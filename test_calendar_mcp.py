@@ -42,6 +42,7 @@ def get_authenticated_session():
             token.write(creds.to_json())
     return creds.token
 
+
 async def test_mcp_connection():
     token = get_authenticated_session()
     server_url = "https://calendarmcp.googleapis.com/mcp/v1"
